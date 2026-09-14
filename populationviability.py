@@ -76,9 +76,11 @@ def simulate_population(initial_population, carrying_capacity, lambda_mean, lamb
         # Disaster event: a random yearly chance of a major population crash.
         # If a random value is less than the disaster probability, a crash happens.
         if random.random() < disaster_probability:
-            # A disaster cuts the population sharply.
-            # Here, a crash reduces the population to 25% of its current level.
-            population = population * 0.25
+            # A disaster cuts the population sharply, but the intensity varies each time.
+            # The crash removes between 40% and 60% of the current population,
+            # meaning the remaining population is between 40% and 60% of the original value.
+            remaining_fraction = random.uniform(0.40, 0.60)
+            population = population * remaining_fraction
 
             # Record the first crash year.
             if disaster_year is None:
