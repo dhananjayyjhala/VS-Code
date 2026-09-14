@@ -1,184 +1,245 @@
-# Import the random module so we can generate random lambda values each year.
+# This script models a population over time using a random growth rate each year.
+# It includes:
+# - a mean lambda value and a distribution around it
+# - a range for lambda (minimum and maximum)
+# - a yearly probability of disaster causing a population crash
+# - a carrying capacity that can vary by +/- 5% each run
+# - a bootstrap simulation with 1000 repeated runs and a final graph
+
 import random
 
+# Try to import matplotlib for the final graph.
+# If it is not installed, the script will still run without plotting.
+try:
+    import matplotlib
+    matplotlib.use("Agg")  # Use a non-interactive backend so the script runs in headless environments.
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 
-# This function simulates one population trajectory across a set number of years.
-# It takes:
-# - initial_population: starting number of individuals
-# - carrying_capacity: maximum population the environment can support
-# - lambda_min and lambda_max: range from which a random growth rate is selected each year
-# - years: how many years to simulate (default is 100)
-def simulate_population(initial_population, carrying_capacity, lambda_min, lambda_max, years=100):
+
+# This function samples a lambda value from a normal distribution centered on the mean.
+# The distribution is constrained to stay within the user-provided min and max range.
+# This means the growth rate is most likely close to the average lambda, but can vary around it.
+def sample_lambda(lambda_mean, lambda_min, lambda_max):
+    # Make sure the user mean is inside the valid range.
+    # If the user gives a value outside the range, clamp it to the nearest boundary.
+    lambda_mean = min(max(lambda_mean, lambda_min), lambda_max)
+
+    # The spread of the normal distribution is based on the width of the lambda range.
+    # Using a quarter of the range gives a reasonable spread: most values stay inside the min-max interval.
+    sigma = (lambda_max - lambda_min) / 4.0
+
+    # If the range is extremely narrow, the spread is effectively zero.
+    if sigma <= 0:
+        return lambda_mean
+
+    # Draw a random value from a normal distribution centered on the mean.
+    lambda_value = random.gauss(lambda_mean, sigma)
+
+    # Keep resampling until the value falls inside the allowed range.
+    while lambda_value < lambda_min or lambda_value > lambda_max:
+        lambda_value = random.gauss(lambda_mean, sigma)
+
+    return lambda_value
+
+
+# This function simulates one population trajectory over a set number of years.
+# It uses a random lambda each year, a possible disaster crash, and a carrying capacity that may vary by +/- 5%.
+def simulate_population(initial_population, carrying_capacity, lambda_mean, lambda_min, lambda_max, disaster_probability=0.0, years=100):
     """
-    Simulate a population over a fixed number of years.
-    Each year, lambda is drawn uniformly at random from the supplied range.
-    The population can never exceed carrying capacity and goes extinct at zero.
+    Simulate one population run for a fixed number of years.
+    Each year, lambda is chosen from a normal distribution centered on the mean lambda.
+    The population may also crash due to a stochastic disaster event.
     """
 
-    # Start with the initial population as a floating-point number so calculations can be fractional.
+    # Convert to float so calculations can be fractional.
     population = float(initial_population)
 
-    # Create variables to remember when the population hits the carrying capacity or goes extinct.
-    # They stay as None until that event happens.
+    # Each run can have a slightly different carrying capacity within +/- 5% of the user input.
+    # This reflects environmental variability from year to year.
+    effective_capacity = carrying_capacity * random.uniform(0.95, 1.05)
+
+    # Track the year when the population first hits its capacity or goes extinct.
     carrying_capacity_year = None
     extinction_year = None
+    disaster_year = None
 
-    # Loop once for each year in the simulation.
-    # year starts at 1, so the first year is counted as year 1.
+    # Loop from year 1 to the requested number of years.
     for year in range(1, years + 1):
-        # Randomly choose one yearly growth rate between the minimum and maximum lambda values.
-        # Example: if lambda_min = 0.9 and lambda_max = 1.2, each year chooses a value in that range.
-        lambda_value = random.uniform(lambda_min, lambda_max)
+        # Sample a growth rate for this year around the mean lambda.
+        lambda_value = sample_lambda(lambda_mean, lambda_min, lambda_max)
 
-        # Update the population using the formula:
-        # new population = current population * lambda
+        # Update the population according to the yearly growth rate.
         population = population * lambda_value
 
-        # If the population exceeds the carrying capacity, set it equal to the carrying capacity.
-        # This keeps the population from growing above the maximum sustainable level.
-        if population >= carrying_capacity:
-            population = float(carrying_capacity)
+        # Disaster event: a random yearly chance of a major population crash.
+        # If a random value is less than the disaster probability, a crash happens.
+        if random.random() < disaster_probability:
+            # A disaster cuts the population sharply.
+            # Here, a crash reduces the population to 25% of its current level.
+            population = population * 0.25
 
-            # Record the first year the population reaches carrying capacity.
+            # Record the first crash year.
+            if disaster_year is None:
+                disaster_year = year
+
+        # If the population exceeds the carrying capacity, cap it there.
+        if population >= effective_capacity:
+            population = float(effective_capacity)
             if carrying_capacity_year is None:
                 carrying_capacity_year = year
 
-        # If the population drops to zero or below, set it to zero and record extinction.
-        # This happens once, the first time it becomes extinct.
+        # If the population drops to or below zero, set it to zero and record extinction.
         if population <= 0:
             population = 0.0
             if extinction_year is None:
                 extinction_year = year
 
-    # Return the final population, the year capacity was reached (if any), and the year extinction happened (if any).
-    return population, carrying_capacity_year, extinction_year
+    # Return the final population and the year of each key event.
+    return population, carrying_capacity_year, extinction_year, disaster_year
 
 
-# This function runs many different random simulations to create a bootstrap-style summary.
-# A bootstrap approach repeats the same stochastic model many times to understand the range of likely outcomes.
-def bootstrap_population_simulation(initial_population, carrying_capacity, lambda_min, lambda_max, runs=1000, years=100):
+# This function runs 1000 random bootstrap simulations to estimate the likely population outcomes.
+def bootstrap_population_simulation(initial_population, carrying_capacity, lambda_mean, lambda_min, lambda_max, disaster_probability=0.0, runs=1000, years=100):
     """
-    Run many random population trajectories to estimate the typical outcome.
-    This is a bootstrap-style Monte Carlo simulation: each run draws a random lambda each year.
+    Run many stochastic simulations and summarize their outcomes.
+    This creates the bootstrap distribution of final population sizes.
     """
 
-    # These lists will store the final population from each simulation run.
+    # Store the final population from each run.
     final_populations = []
     capacity_years = []
     extinction_years = []
+    disaster_years = []
 
     # Repeat the simulation many times.
     for _ in range(runs):
-        # Run one simulation and get the final population and event years.
-        final_population, carrying_capacity_year, extinction_year = simulate_population(
+        final_population, carrying_capacity_year, extinction_year, disaster_year = simulate_population(
             initial_population,
             carrying_capacity,
+            lambda_mean,
             lambda_min,
             lambda_max,
+            disaster_probability,
             years,
         )
 
-        # Save the final population for this run.
         final_populations.append(final_population)
 
-        # If the population reached carrying capacity in this run, save the year it happened.
         if carrying_capacity_year is not None:
             capacity_years.append(carrying_capacity_year)
 
-        # If the population went extinct in this run, save the year it happened.
         if extinction_year is not None:
             extinction_years.append(extinction_year)
 
-    # Calculate summary statistics across all runs.
-    return {
-        # Average final population across all runs.
+        if disaster_year is not None:
+            disaster_years.append(disaster_year)
+
+    # Calculate summary statistics.
+    summary = {
         "average_final_population": sum(final_populations) / runs,
-
-        # Lowest and highest final population seen in the simulations.
         "final_population_range": (min(final_populations), max(final_populations)),
-
-        # Average year that carrying capacity was reached, but only if it ever happened.
         "average_capacity_year": sum(capacity_years) / len(capacity_years) if capacity_years else None,
-
-        # Average year extinction happened, but only if it ever happened.
         "average_extinction_year": sum(extinction_years) / len(extinction_years) if extinction_years else None,
-
-        # Probability of hitting carrying capacity in a random run.
+        "average_disaster_year": sum(disaster_years) / len(disaster_years) if disaster_years else None,
         "probability_of_reaching_capacity": len(capacity_years) / runs,
-
-        # Probability of extinction in a random run.
         "probability_of_extinction": len(extinction_years) / runs,
+        "probability_of_disaster": len(disaster_years) / runs,
+        "final_populations": final_populations,
     }
 
+    # Make the final bootstrap graph if matplotlib is available.
+    if plt is not None:
+        plt.figure(figsize=(10, 6))
+        plt.hist(final_populations, bins=25, color="steelblue", edgecolor="black")
+        plt.title("Distribution of Final Population Sizes Across 1000 Bootstrap Runs")
+        plt.xlabel("Final population after 100 years")
+        plt.ylabel("Number of runs")
+        plt.grid(axis="y", alpha=0.3)
+        plt.tight_layout()
+        plt.show()
 
-# This block only runs when the file is executed directly, not when it is imported elsewhere.
+    return summary
+
+
+# This block runs only when the script is executed directly.
 if __name__ == "__main__":
     try:
-        # Ask the user for the starting conditions.
-        # These values define the population model.
+        # Ask the user for the population and model parameters.
         initial_population = float(input("Enter the current population size: "))
         carrying_capacity = float(input("Enter the carrying capacity: "))
-        lambda_min = float(input("Enter the minimum lambda value for the range: "))
-        lambda_max = float(input("Enter the maximum lambda value for the range: "))
+        lambda_min = float(input("Enter the minimum lambda value: "))
+        lambda_mean = float(input("Enter the average lambda value: "))
+        lambda_max = float(input("Enter the maximum lambda value: "))
+        disaster_probability = float(input("Enter the probability of a population crash each year (between 0 and 1): "))
 
-        # Check that the inputs are realistic.
-        # Lambda must be greater than 0 because it is a multiplication factor.
-        if lambda_min <= 0 or lambda_max <= 0:
-            raise ValueError("Lambda values must be greater than zero.")
-
-        # Carrying capacity must also be positive.
+        # Check that the inputs are valid.
+        if lambda_min <= 0 or lambda_mean <= 0 or lambda_max <= 0:
+            raise ValueError("All lambda values must be greater than zero.")
+        if lambda_min > lambda_mean or lambda_mean > lambda_max:
+            raise ValueError("The mean lambda must lie between the minimum and maximum lambda values.")
         if carrying_capacity <= 0:
             raise ValueError("Carrying capacity must be greater than zero.")
-
-        # Population cannot be negative.
         if initial_population < 0:
             raise ValueError("Population cannot be negative.")
+        if not (0 <= disaster_probability <= 1):
+            raise ValueError("Disaster probability must be between 0 and 1.")
 
-        # Run one simulation for 100 years and store the key results.
-        final_population, capacity_year, extinction_year = simulate_population(
+        # Run one representative simulation for 100 years.
+        final_population, capacity_year, extinction_year, disaster_year = simulate_population(
             initial_population,
             carrying_capacity,
+            lambda_mean,
             lambda_min,
             lambda_max,
+            disaster_probability,
             years=100,
         )
 
-        # Print the main results for this one simulation.
+        # Print the main results for that single simulation.
         print("\nPopulation viability simulation")
         print(f"Initial population: {initial_population}")
         print(f"Carrying capacity: {carrying_capacity}")
         print(f"Lambda range: {lambda_min} to {lambda_max}")
+        print(f"Mean lambda: {lambda_mean}")
+        print(f"Yearly disaster probability: {disaster_probability:.3f}")
         print(f"Population after 100 years: {final_population:.2f}")
 
-        # If the population reached carrying capacity, print the year it happened.
         if capacity_year is not None:
             print(f"The population reached carrying capacity in year {capacity_year}.")
         else:
             print("The population did not reach carrying capacity within 100 years.")
 
-        # If the population went extinct, print the year it happened.
         if extinction_year is not None:
             print(f"The population went extinct in year {extinction_year}.")
         else:
             print("The population did not go extinct within 100 years.")
 
-        # Run a bootstrap summary with 1000 random trajectories to estimate patterns over many possible outcomes.
+        if disaster_year is not None:
+            print(f"A population crash occurred in year {disaster_year}.")
+        else:
+            print("No major population crash occurred in this simulation.")
+
+        # Run the full 1000-run bootstrap simulation and show the plot.
         summary = bootstrap_population_simulation(
             initial_population,
             carrying_capacity,
+            lambda_mean,
             lambda_min,
             lambda_max,
+            disaster_probability,
             runs=1000,
             years=100,
         )
 
-        # Print the bootstrap summary results.
         print("\nBootstrap summary over 1000 random trajectories")
         print(f"Average final population: {summary['average_final_population']:.2f}")
         print(f"Probability of reaching carrying capacity: {summary['probability_of_reaching_capacity'] * 100:.1f}%")
         print(f"Probability of extinction: {summary['probability_of_extinction'] * 100:.1f}%")
+        print(f"Probability of a population crash: {summary['probability_of_disaster'] * 100:.1f}%")
 
-    # If the user enters invalid and impossible values, show a clear error message.
+    # Catch invalid inputs and display a clear message.
     except ValueError as e:
         print(f"Input error: {e}")
-        print("Please enter valid positive numbers.")
+        print("Please enter valid values for the population, carrying capacity, lambda range, and disaster probability.")
